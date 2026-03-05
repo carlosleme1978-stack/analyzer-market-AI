@@ -489,7 +489,12 @@ def _openai_json(
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         timeout=75,
     )
-    r.raise_for_status()
+    
+    if r.status_code != 200:
+        print("[openai] status:", r.status_code)
+        print("[openai] body:", (r.text or "")[:500])
+        r.raise_for_status()
+
     data = r.json() or {}
     usage = data.get("usage") or {}
     tokens_used = int(usage.get("total_tokens") or 0)

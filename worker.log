@@ -3,19 +3,22 @@
 [debug] claim headers keys: ['x-timestamp', 'x-nonce', 'x-signature', 'content-type']
 [debug] claim timeout: 25
 [debug] claim status: 200
-[debug] claim body: {"job":{"id":null,"analysis_id":null,"status":null,"attempt_count":null,"run_at":null,"lock_owner":null,"locked_until":null,"finished_at":null,"last_error":null,"created_at":null}}
+[debug] claim body: {"job":{"id":"e48ede43-8604-4198-b666-bb15a340f9e4","analysis_id":"b4925882-ac83-4e1e-9768-0090c733443f","status":"processing","attempt_count":0,"run_at":"2026-03-05T11:21:17.159796+00:00","lock_owner":"worker-1","locked_until":"2026-03-05T11:30:59.318817+00:00","finished_at":null,"last_error":null,
+[worker] _process_job start: {'job_id': 'e48ede43-8604-4198-b666-bb15a340f9e4', 'analysis_id': 'b4925882-ac83-4e1e-9768-0090c733443f'}
+[worker] fetching analysis: b4925882-ac83-4e1e-9768-0090c733443f
+[worker] analysis fetch status: 200
 [debug] claim url: https://analyzer-market-ai.vercel.app/api/worker/claim
 [debug] claim headers keys: ['x-timestamp', 'x-nonce', 'x-signature', 'content-type']
 [debug] claim timeout: 25
 [debug] claim status: 200
-[debug] claim body: {"job":{"id":null,"analysis_id":null,"status":null,"attempt_count":null,"run_at":null,"lock_owner":null,"locked_until":null,"finished_at":null,"last_error":null,"created_at":null}}
+[debug] claim body: {"job":null}
 [debug] claim url: https://analyzer-market-ai.vercel.app/api/worker/claim
 [debug] claim headers keys: ['x-timestamp', 'x-nonce', 'x-signature', 'content-type']
 [debug] claim timeout: 25
 [debug] claim status: 200
-[debug] claim body: {"job":{"id":null,"analysis_id":null,"status":null,"attempt_count":null,"run_at":null,"lock_owner":null,"locked_until":null,"finished_at":null,"last_error":null,"created_at":null}}
+[debug] claim body: {"job":null}
 [debug] claim url: https://analyzer-market-ai.vercel.app/api/worker/claim
 [debug] claim headers keys: ['x-timestamp', 'x-nonce', 'x-signature', 'content-type']
 [debug] claim timeout: 25
 [debug] claim status: 200
-[debug] claim body: {"job":{"id":null,"analysis_id":null,"status":null,"attempt_count":null,"run_at":null,"lock_owner":null,"locked_until":null,"finished_at":null,"last_error":null,"created_at":null}}
+[debug] claim body: {"job":null}
