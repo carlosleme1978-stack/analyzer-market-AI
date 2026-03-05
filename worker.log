@@ -1,0 +1,21 @@
+[worker] V17 starting — base=https://analyzer-market-ai.vercel.app owner=worker-1
+[debug] claim url: https://analyzer-market-ai.vercel.app/api/worker/claim
+[debug] claim headers keys: ['x-timestamp', 'x-nonce', 'x-signature', 'content-type']
+[debug] claim timeout: 25
+[debug] claim status: 200
+[debug] claim body: {"job":{"id":null,"analysis_id":null,"status":null,"attempt_count":null,"run_at":null,"lock_owner":null,"locked_until":null,"finished_at":null,"last_error":null,"created_at":null}}
+[debug] claim url: https://analyzer-market-ai.vercel.app/api/worker/claim
+[debug] claim headers keys: ['x-timestamp', 'x-nonce', 'x-signature', 'content-type']
+[debug] claim timeout: 25
+[debug] claim status: 200
+[debug] claim body: {"job":{"id":null,"analysis_id":null,"status":null,"attempt_count":null,"run_at":null,"lock_owner":null,"locked_until":null,"finished_at":null,"last_error":null,"created_at":null}}
+[debug] claim url: https://analyzer-market-ai.vercel.app/api/worker/claim
+[debug] claim headers keys: ['x-timestamp', 'x-nonce', 'x-signature', 'content-type']
+[debug] claim timeout: 25
+[debug] claim status: 200
+[debug] claim body: {"job":{"id":null,"analysis_id":null,"status":null,"attempt_count":null,"run_at":null,"lock_owner":null,"locked_until":null,"finished_at":null,"last_error":null,"created_at":null}}
+[debug] claim url: https://analyzer-market-ai.vercel.app/api/worker/claim
+[debug] claim headers keys: ['x-timestamp', 'x-nonce', 'x-signature', 'content-type']
+[debug] claim timeout: 25
+[debug] claim status: 200
+[debug] claim body: {"job":{"id":null,"analysis_id":null,"status":null,"attempt_count":null,"run_at":null,"lock_owner":null,"locked_until":null,"finished_at":null,"last_error":null,"created_at":null}}

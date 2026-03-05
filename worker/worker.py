@@ -11,6 +11,11 @@ Analyzer Market AI Worker (V17)
 
 Security:
 - Every request to /api/worker/* is signed with HMAC (ts + nonce + body)
+
+IMPORTANT (fix):
+- /api/worker/complete expects: job_id, analysis_id, lock_owner, ok (boolean), result.usage.*
+- /api/worker/claim may return a record with id null if DB function returns an "empty row";
+  this worker treats missing job.id as "no job".
 """
 
 import os
@@ -58,17 +63,30 @@ def _hmac_headers(raw_body: bytes) -> Dict[str, str]:
     msg = (ts + "." + nonce + ".").encode("utf-8") + raw_body
     sig = hmac.new(WORKER_SECRET.encode("utf-8"), msg, hashlib.sha256).hexdigest()
     return {
-        "x-worker-ts": ts,
-        "x-worker-nonce": nonce,
-        "x-worker-sig": sig,
+        "x-timestamp": ts,
+        "x-nonce": nonce,
+        "x-signature": sig,
         "content-type": "application/json",
     }
 
 
 def _post(path: str, payload: Dict[str, Any], timeout: int = 30) -> requests.Response:
-    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    raw_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    raw = raw_str.encode("utf-8")
     headers = _hmac_headers(raw)
-    return requests.post(API_BASE + path, headers=headers, data=raw, timeout=timeout)
+
+    if path == "/api/worker/claim":
+        print("[debug] claim url:", API_BASE + path)
+        print("[debug] claim headers keys:", list(headers.keys()))
+        print("[debug] claim timeout:", timeout)
+
+    resp = requests.post(API_BASE + path, headers=headers, data=raw, timeout=timeout)
+
+    if path == "/api/worker/claim":
+        print("[debug] claim status:", resp.status_code)
+        print("[debug] claim body:", (resp.text or "")[:300])
+
+    return resp
 
 
 def _daily_consume(kind: str, amount: int) -> bool:
@@ -95,7 +113,11 @@ def _places_cache_get(cache_key: str) -> Optional[Dict[str, Any]]:
 
 def _places_cache_set(cache_key: str, value: Dict[str, Any], ttl_seconds: int) -> None:
     try:
-        _post("/api/worker/places-cache/set", {"cache_key": cache_key, "value": value, "ttl_seconds": int(ttl_seconds)}, timeout=20)
+        _post(
+            "/api/worker/places-cache/set",
+            {"cache_key": cache_key, "value": value, "ttl_seconds": int(ttl_seconds)},
+            timeout=20,
+        )
     except Exception:
         pass
 
@@ -134,7 +156,6 @@ def _places_text_search(query: str, region: str = "") -> Tuple[List[Dict[str, An
                 "name": it.get("name"),
                 "rating": it.get("rating"),
                 "user_ratings_total": it.get("user_ratings_total"),
-                # Do not store place_id here in V16 to reduce redistrib risk
                 "types": it.get("types") if isinstance(it.get("types"), list) else [],
             }
         )
@@ -152,16 +173,9 @@ def _compute_benchmarks(competitors: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _opportunity_label(competitors_count: int, avg_rating: float, avg_reviews: int) -> str:
-    """Deterministic opportunity classification.
-
-    Lower competitor density + lower barrier (avg reviews) -> higher opportunity.
-    Rating is used as a soft proxy for market quality.
-    """
-    # Competition pressure: 0..100 (higher = more pressure)
+    """Deterministic opportunity classification."""
     pressure = min(100, competitors_count * 7)
-    # Barrier: average reviews indicates entrenched players
     barrier = min(100, int(avg_reviews / 4))  # 400 => 100
-    # Quality (soft): higher ratings suggests quality expectations
     quality = min(100, int(avg_rating * 20))
     score = 100 - int(round((pressure * 0.55) + (barrier * 0.35) + (quality * 0.10)))
     if score >= 60:
@@ -179,19 +193,15 @@ def _build_opportunity_map(
     business: str,
     remaining_places_calls: int,
 ) -> Tuple[Dict[str, Any], int]:
-    """Builds "Mapa de Oportunidade Local" with minimal extra Places calls.
-
-    Strategy:
-    - Always include the base area row (the original query).
-    - If we have budget, try up to 2 additional micro-regions by appending: "Centro", "Zona Norte", "Zona Sul".
-    - Everything is deterministic from Places stats.
-
-    Returns: (block_json, additional_calls_used)
-    """
+    """Builds "Mapa de Oportunidade Local" with minimal extra Places calls."""
 
     def _row(label: str, competitors: List[Dict[str, Any]]) -> Dict[str, Any]:
         b = _compute_benchmarks(competitors)
-        opp = _opportunity_label(int(b.get("competitors_found") or 0), float(b.get("avg_rating") or 0), int(b.get("avg_reviews") or 0))
+        opp = _opportunity_label(
+            int(b.get("competitors_found") or 0),
+            float(b.get("avg_rating") or 0),
+            int(b.get("avg_reviews") or 0),
+        )
         return {
             "region": label,
             "competitors": int(b.get("competitors_found") or 0),
@@ -201,21 +211,17 @@ def _build_opportunity_map(
         }
 
     rows: List[Dict[str, Any]] = []
-    # Base row
     base_label = (location or "Área analisada").strip() or "Área analisada"
     rows.append(_row(base_label, base_competitors))
 
     calls_used = 0
     micro_labels = ["Centro", "Zona Norte", "Zona Sul"]
 
-    # Only try micro-regions if we have any location hint
     if remaining_places_calls > 0 and (location or keywords or business):
-        # Keep it cheap: max 2 extra calls
         max_extra = min(2, remaining_places_calls)
         for lab in micro_labels:
             if calls_used >= max_extra:
                 break
-            # Micro query: prefer keyword/service + location + label
             base = (keywords or business or "").strip()
             micro_q = " ".join([base, location, lab]).strip() or (base_query + " " + lab).strip()
             if not micro_q:
@@ -224,7 +230,6 @@ def _build_opportunity_map(
             calls_used += int(calls)
             rows.append(_row(lab, items[:12]))
 
-    # Decide best region (highest opportunity then lowest competitors)
     def _rank_key(r: Dict[str, Any]):
         opp = str(r.get("opportunity") or "Baixa")
         opp_w = {"Alta": 3, "Média": 2, "Baixa": 1}.get(opp, 1)
@@ -250,7 +255,6 @@ def _build_opportunity_map(
 
 
 def _build_competitive_gap(competitors: List[Dict[str, Any]], bench: Dict[str, Any]) -> Dict[str, Any]:
-    # top 3 by reviews
     top = sorted(
         [c for c in competitors if isinstance(c, dict)],
         key=lambda c: int(c.get("user_ratings_total") or 0),
@@ -267,9 +271,7 @@ def _build_competitive_gap(competitors: List[Dict[str, Any]], bench: Dict[str, A
     avg_rating = float(bench.get("avg_rating") or 0)
     avg_reviews = int(bench.get("avg_reviews") or 0)
 
-    # Targets: conservative, no promises
     rating_target = round(min(5.0, max(avg_rating, top_avg_rating - 0.05)), 2) if (avg_rating or top_avg_rating) else 0.0
-    # Round reviews to nearest 10
     reviews_target_raw = max(avg_reviews, int(top_avg_reviews * 0.70))
     reviews_target = int(round(reviews_target_raw / 10.0) * 10) if reviews_target_raw else 0
 
@@ -292,18 +294,34 @@ def _build_competitive_gap(competitors: List[Dict[str, Any]], bench: Dict[str, A
 
 
 def _build_acquisition_strategy(context: Dict[str, Any], bench: Dict[str, Any]) -> Dict[str, Any]:
-    """Deterministic marketing channel heuristic."""
     q = (context.get("query") or "").lower()
     business = (context.get("business") or "").lower()
     keywords = (context.get("keywords") or "").lower()
     comp = int(bench.get("competitors_found") or 0)
 
-    is_visual = any(k in (keywords + " " + business + " " + q) for k in [
-        "estética", "barbear", "barbearia", "restaurante", "café", "cafe", "padaria", "pizzaria", "academia", "moda", "salão", "salao", "fotografia", "personal",
-    ])
+    is_visual = any(
+        k in (keywords + " " + business + " " + q)
+        for k in [
+            "estética",
+            "barbear",
+            "barbearia",
+            "restaurante",
+            "café",
+            "cafe",
+            "padaria",
+            "pizzaria",
+            "academia",
+            "moda",
+            "salão",
+            "salao",
+            "fotografia",
+            "personal",
+        ]
+    )
 
-    # High intent proxy: service keywords present and not only brand name
-    high_intent = bool(keywords.strip()) or any(x in q for x in ["perto", "próximo", "proximo", "24h", "urgência", "urgencia", "preço", "preco", "orçamento", "orcamento", "melhor"])
+    high_intent = bool(keywords.strip()) or any(
+        x in q for x in ["perto", "próximo", "proximo", "24h", "urgência", "urgencia", "preço", "preco", "orçamento", "orcamento", "melhor"]
+    )
 
     rows: List[Dict[str, Any]] = []
 
@@ -359,21 +377,13 @@ def _build_investment_estimate(bench: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _score_breakdown(bench: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Heuristic scoring: keeps product consistent even if LLM fails.
-    Produces 0-100 subscores and total.
-    """
     comp = int(bench.get("competitors_found") or 0)
     avg_rating = float(bench.get("avg_rating") or 0)
     avg_reviews = int(bench.get("avg_reviews") or 0)
 
-    # Competition saturation: more competitors => lower opportunity
     competition = max(0, 100 - min(100, comp * 6))
-    # Demand proxy: more reviews in the area => higher demand
-    demand = min(100, int(avg_reviews / 5))  # 500 reviews avg => 100
-    # Reputation: rating proxy
-    reputation = min(100, int(avg_rating * 20))  # 5.0 => 100
-    # Visibility is unknown without GBP data; infer from comp size
+    demand = min(100, int(avg_reviews / 5))
+    reputation = min(100, int(avg_rating * 20))
     visibility = max(20, min(100, 70 - int(comp * 1.5)))
 
     total = int(round((competition * 0.30) + (demand * 0.25) + (reputation * 0.25) + (visibility * 0.20)))
@@ -411,11 +421,14 @@ def _estimate_openai_cost_cents(tokens_used: int) -> int:
     return int(round((tokens_used / 1000.0) * OPENAI_COST_PER_1K_TOKENS_CENTS))
 
 
-def _openai_json(context: Dict[str, Any], competitors: List[Dict[str, Any]], bench: Dict[str, Any], score_bd: Dict[str, Any], max_out: int) -> Tuple[Optional[Dict[str, Any]], int]:
-    """
-    Calls OpenAI Chat Completions and tries to parse a single JSON object from assistant content.
-    Returns (report_json_or_none, tokens_used).
-    """
+def _openai_json(
+    context: Dict[str, Any],
+    competitors: List[Dict[str, Any]],
+    bench: Dict[str, Any],
+    score_bd: Dict[str, Any],
+    max_out: int,
+) -> Tuple[Optional[Dict[str, Any]], int]:
+    """Calls OpenAI Chat Completions and parses a JSON object. Returns (json_or_none, tokens_used)."""
     if not OPENAI_API_KEY:
         return (None, 0)
 
@@ -434,13 +447,7 @@ def _openai_json(context: Dict[str, Any], competitors: List[Dict[str, Any]], ben
                 "schema": {
                     "title": "string (ex.: Plano de Tráfego Pago Local para <negócio> em <cidade>)",
                     "score_total": "number(0-100)",
-                    "score_breakdown": {
-                        "competition": "0-100",
-                        "demand": "0-100",
-                        "reputation": "0-100",
-                        "visibility": "0-100",
-                        "drivers": "array"
-                    },
+                    "score_breakdown": {"competition": "0-100", "demand": "0-100", "reputation": "0-100", "visibility": "0-100", "drivers": "array"},
                     "benchmarks": {"avg_rating": "number", "avg_reviews": "number", "competitors_found": "number"},
                     "local_competitors": "array(objects: name, rating, user_ratings_total) (top 8)",
                     "opportunity_map": "object(rows:[{region,competitors,avg_rating,avg_reviews,opportunity}], insight:string)",
@@ -452,7 +459,7 @@ def _openai_json(context: Dict[str, Any], competitors: List[Dict[str, Any]], ben
                     "instagram_hashtags": "array(15-30 strings) (mistas: local + nicho)",
                     "campaign_structure_google_ads": "object(campaigns:[{name, ad_groups:[{name, intent}], keywords:[strings], landing_page_angle:string}])",
                     "budget_daily_eur": "object(min:number, max:number, split:{google_ads_pct:number, instagram_ads_pct:number})",
-                    "insights": "array(5-8 strings, objetivas, com números quando possível)",
+                    "insights": "array(5-8 strings)",
                     "risks": "array(3-5 strings)",
                     "opportunities": "array(4-6 strings)",
                     "actions_7_days": "array(objects: task, eta_minutes, difficulty, impact)",
@@ -466,7 +473,7 @@ def _openai_json(context: Dict[str, Any], competitors: List[Dict[str, Any]], ben
                 "rules": [
                     "Não seja genérico. Use números do benchmark (médias, contagem de concorrentes) e traduza em decisões de anúncios (onde, como, quanto).",
                     "Não prometa resultados garantidos.",
-                    "Os blocos opportunity_map/competitive_gap/acquisition_strategy/investment_estimate podem ser breves; não invente dados.",
+                    "Não invente dados.",
                     "Escreva em português do Brasil.",
                 ],
             },
@@ -474,12 +481,7 @@ def _openai_json(context: Dict[str, Any], competitors: List[Dict[str, Any]], ben
         ),
     }
 
-    body = {
-        "model": OPENAI_MODEL,
-        "messages": [system, user],
-        "max_tokens": int(max_out),
-        "temperature": 0.35,
-    }
+    body = {"model": OPENAI_MODEL, "messages": [system, user], "max_tokens": int(max_out), "temperature": 0.35}
 
     r = requests.post(
         "https://api.openai.com/v1/chat/completions",
@@ -494,18 +496,16 @@ def _openai_json(context: Dict[str, Any], competitors: List[Dict[str, Any]], ben
     content = (((data.get("choices") or [{}])[0]).get("message") or {}).get("content") or ""
     content = content.strip()
 
-    # Try parse as JSON
     try:
         parsed = json.loads(content)
         if isinstance(parsed, dict):
             return (parsed, tokens_used)
     except Exception:
-        # Try to extract first {...} block
         m1 = content.find("{")
         m2 = content.rfind("}")
         if m1 != -1 and m2 != -1 and m2 > m1:
             try:
-                parsed = json.loads(content[m1:m2+1])
+                parsed = json.loads(content[m1 : m2 + 1])
                 if isinstance(parsed, dict):
                     return (parsed, tokens_used)
             except Exception:
@@ -516,7 +516,6 @@ def _openai_json(context: Dict[str, Any], competitors: List[Dict[str, Any]], ben
 
 def _fallback_report(context: Dict[str, Any], bench: Dict[str, Any], score_bd: Dict[str, Any]) -> Dict[str, Any]:
     a7, a30 = _actions_templates()
-    # Minimal deterministic blocks (keeps report valuable even without LLM)
     opportunity_map, _calls = _build_opportunity_map(
         base_query=str(context.get("query") or ""),
         base_competitors=[],
@@ -562,63 +561,50 @@ def _fallback_report(context: Dict[str, Any], bench: Dict[str, Any], score_bd: D
     }
 
 
-def _build_report(context: Dict[str, Any], competitors: List[Dict[str, Any]], bench: Dict[str, Any], max_tokens: int, max_cost_cents: int) -> Tuple[Dict[str, Any], int, int]:
+def _build_report(
+    context: Dict[str, Any],
+    competitors: List[Dict[str, Any]],
+    bench: Dict[str, Any],
+    max_tokens: int,
+    max_cost_cents: int,
+) -> Tuple[Dict[str, Any], int, int]:
     score_bd = _score_breakdown(bench)
 
-    # If OpenAI disabled or budgets too low, fallback
     if not OPENAI_API_KEY:
         rep = _fallback_report(context, bench, score_bd)
         return (rep, 0, 0)
 
-    # Global daily cap (optional): consume estimated cents budget before calling
-    # We'll call OpenAI, then record actual estimate based on tokens_used.
-    # Pre-check: if cap enabled, ensure at least 1 cent remaining
     if MAX_DAILY_OPENAI_CENTS and not _daily_consume("openai_cents", 1):
         rep = _fallback_report(context, bench, score_bd)
         return (rep, 0, 0)
 
-    # Call OpenAI
     report_json, tokens_used = _openai_json(context, competitors, bench, score_bd, max_tokens)
     est_cents = _estimate_openai_cost_cents(tokens_used)
+
     if tokens_used and MAX_DAILY_OPENAI_CENTS:
-        # consume remaining after the pre-check
         extra = max(0, est_cents - 1)
         if extra:
             allowed = _daily_consume("openai_cents", extra)
             if not allowed:
-                # Budget exceeded after the call: degrade content (still keep consistent)
                 report_json = None
 
-    # Enforce per-analysis max cost (best-effort)
     if est_cents > int(max_cost_cents or 0) and int(max_cost_cents or 0) > 0:
         report_json = None
 
     if not isinstance(report_json, dict):
         report_json = _fallback_report(context, bench, score_bd)
 
-    # Deterministic blocks (low-cost) — always computed and injected
     local_competitors = [
         {"name": c.get("name"), "rating": c.get("rating"), "user_ratings_total": c.get("user_ratings_total")}
         for c in (competitors[:8] if isinstance(competitors, list) else [])
         if isinstance(c, dict)
     ]
-    # Opportunity map: allow 0 extra calls here (worker already spent Places). Micro-regions handled in _process_job.
-    # Placeholder injection will be overwritten when provided.
-    report_json.setdefault("local_competitors", local_competitors)
-    report_json.setdefault(
-        "competitive_gap",
-        _build_competitive_gap(competitors, bench),
-    )
-    report_json.setdefault(
-        "acquisition_strategy",
-        _build_acquisition_strategy(context, bench),
-    )
-    report_json.setdefault(
-        "investment_estimate",
-        _build_investment_estimate(bench),
-    )
 
-    # Ensure required keys exist
+    report_json.setdefault("local_competitors", local_competitors)
+    report_json.setdefault("competitive_gap", _build_competitive_gap(competitors, bench))
+    report_json.setdefault("acquisition_strategy", _build_acquisition_strategy(context, bench))
+    report_json.setdefault("investment_estimate", _build_investment_estimate(bench))
+
     a7, a30 = _actions_templates()
     report_json.setdefault("score_total", int(score_bd.get("total") or 0))
     report_json.setdefault("score_breakdown", score_bd)
@@ -630,22 +616,23 @@ def _build_report(context: Dict[str, Any], competitors: List[Dict[str, Any]], be
 
 
 def _to_markdown(report_json: Dict[str, Any]) -> str:
-    # Simple markdown renderer (safe, deterministic)
     title = report_json.get("title") or "Relatório de Tráfego Pago Local"
     s_total = report_json.get("score_total")
     bd = report_json.get("score_breakdown") or {}
     bench = report_json.get("benchmarks") or {}
 
-    md = []
+    md: List[str] = []
     md.append(f"# {title}")
     if isinstance(s_total, (int, float)):
         md.append(f"**Score geral:** {int(s_total)}/100")
+
     if isinstance(bd, dict):
         md.append("")
         md.append("## Score detalhado")
         for k in ["competition", "demand", "reputation", "visibility"]:
             if k in bd:
                 md.append(f"- **{k}**: {int(bd.get(k) or 0)}/100")
+
     if isinstance(bench, dict):
         md.append("")
         md.append("## Benchmarks locais (Google Places)")
@@ -653,21 +640,19 @@ def _to_markdown(report_json: Dict[str, Any]) -> str:
         md.append(f"- Média de rating: {float(bench.get('avg_rating') or 0):.2f}")
         md.append(f"- Média de reviews: {int(bench.get('avg_reviews') or 0)}")
 
-    def _list(title: str, key: str):
+    def _list(title2: str, key: str):
         arr = report_json.get(key)
         if isinstance(arr, list) and arr:
             md.append("")
-            md.append(f"## {title}")
+            md.append(f"## {title2}")
             for it in arr:
                 if isinstance(it, dict) and "task" in it:
                     md.append(f"- {it.get('task')} (ETA {it.get('eta_minutes','?')} min, impacto {it.get('impact','?')})")
                 else:
                     md.append(f"- {str(it)}")
 
-    # Order (V17)
     _list("Insights objetivos", "insights")
 
-    # Concorrentes locais
     lc = report_json.get("local_competitors")
     if isinstance(lc, list) and lc:
         md.append("")
@@ -676,7 +661,6 @@ def _to_markdown(report_json: Dict[str, Any]) -> str:
             if isinstance(c, dict):
                 md.append(f"- {c.get('name','—')} — {c.get('rating','?')}⭐ — {c.get('user_ratings_total','?')} reviews")
 
-    # Bloco 1 — Mapa de Oportunidade
     om = report_json.get("opportunity_map")
     if isinstance(om, dict):
         rows = om.get("rows")
@@ -693,7 +677,6 @@ def _to_markdown(report_json: Dict[str, Any]) -> str:
             if om.get("insight"):
                 md.append(f"\n**Insight:** {om.get('insight')}")
 
-    # Bloco 2 — Gap competitivo
     cg = report_json.get("competitive_gap")
     if isinstance(cg, dict):
         md.append("")
@@ -706,7 +689,6 @@ def _to_markdown(report_json: Dict[str, Any]) -> str:
         if cg.get("insight"):
             md.append(f"\n**Insight:** {cg.get('insight')}")
 
-    # Bloco 3 — Estratégia de tráfego pago
     acq = report_json.get("acquisition_strategy")
     if isinstance(acq, dict):
         rows = acq.get("rows")
@@ -717,7 +699,6 @@ def _to_markdown(report_json: Dict[str, Any]) -> str:
                 if isinstance(r, dict):
                     md.append(f"- {r.get('channel')}: prioridade {r.get('priority')} — {r.get('reason')}")
 
-    # Bloco 4 — Estimativa de investimento
     inv = report_json.get("investment_estimate")
     if isinstance(inv, dict):
         md.append("")
@@ -730,7 +711,6 @@ def _to_markdown(report_json: Dict[str, Any]) -> str:
         if inv.get("disclaimer"):
             md.append(f"\n*{inv.get('disclaimer')}*")
 
-    # Existing blocks (order required)
     _list("Oportunidades", "opportunities")
     _list("Riscos", "risks")
     _list("Plano de ação — 7 dias", "actions_7_days")
@@ -758,7 +738,11 @@ class Heartbeat(Thread):
 def _process_job(job: Dict[str, Any]) -> None:
     job_id = job.get("id")
     analysis_id = job.get("analysis_id")
+
+    print("[worker] _process_job start:", {"job_id": job_id, "analysis_id": analysis_id})
+
     if not job_id or not analysis_id:
+        print("[worker] _process_job missing ids; returning")
         return
 
     stop = Event()
@@ -766,14 +750,21 @@ def _process_job(job: Dict[str, Any]) -> None:
     hb.start()
 
     try:
-        r = _post(f"/api/worker/analysis/{analysis_id}", {}, timeout=25)
+        print("[worker] fetching analysis:", analysis_id)
+        r = _post(f"/api/worker/analysis/{analysis_id}", {}, timeout=60)
+        print("[worker] analysis fetch status:", r.status_code)
+
         if r.status_code != 200:
-            _post("/api/worker/complete", {"job_id": job_id, "status": "failed", "error": "analysis_fetch_failed"}, timeout=25)
+            _post(
+                "/api/worker/complete",
+                {"job_id": job_id, "analysis_id": analysis_id, "lock_owner": LOCK_OWNER, "ok": False, "error": "analysis_fetch_failed"},
+                timeout=25,
+            )
             return
+
         analysis = (r.json() or {}).get("analysis") or {}
         inputv = analysis.get("input") or {}
 
-        # Per-analysis caps
         max_cost_cents = int(analysis.get("max_cost_cents") or MAX_OPENAI_COST_CENTS_DEFAULT)
         max_places_calls = int(analysis.get("max_places_calls") or MAX_PLACES_CALLS_DEFAULT)
         max_openai_tokens = int(analysis.get("max_openai_tokens") or MAX_OPENAI_TOKENS_DEFAULT)
@@ -785,13 +776,18 @@ def _process_job(job: Dict[str, Any]) -> None:
 
         q = query or " ".join([business, keywords, location]).strip()
         if not q:
-            _post("/api/worker/complete", {"job_id": job_id, "status": "failed", "error": "missing_query"}, timeout=25)
+            _post(
+                "/api/worker/complete",
+                {"job_id": job_id, "analysis_id": analysis_id, "lock_owner": LOCK_OWNER, "ok": False, "error": "missing_query"},
+                timeout=25,
+            )
             return
 
         context = {"query": q, "business": business, "location": location, "keywords": keywords}
 
         competitors: List[Dict[str, Any]] = []
         places_calls = 0
+
         if max_places_calls > 0:
             items, calls, status = _places_text_search(q, region="")
             competitors = items[: max(0, min(12, max_places_calls * 3))]
@@ -799,7 +795,6 @@ def _process_job(job: Dict[str, Any]) -> None:
 
         bench = _compute_benchmarks(competitors)
 
-        # New blocks (V17) — keep Places cost low: only use remaining call budget
         remaining_calls = max(0, int(max_places_calls) - int(places_calls))
         opportunity_map, extra_calls = _build_opportunity_map(
             base_query=q,
@@ -812,11 +807,9 @@ def _process_job(job: Dict[str, Any]) -> None:
         places_calls += int(extra_calls)
 
         report_json, tokens_used, est_cents = _build_report(context, competitors, bench, max_openai_tokens, max_cost_cents)
-        # Ensure deterministic blocks are present and ordered
         report_json["opportunity_map"] = opportunity_map
         report_md = _to_markdown(report_json)
 
-        # A compact summary for list/status
         summary = ""
         insights = report_json.get("insights")
         if isinstance(insights, list) and insights:
@@ -825,25 +818,34 @@ def _process_job(job: Dict[str, Any]) -> None:
 
         payload = {
             "job_id": job_id,
-            "status": "ready",
+            "analysis_id": analysis_id,
+            "lock_owner": LOCK_OWNER,
+            "ok": True,
             "result": {
                 "score": score_total,
                 "summary": summary,
                 "recommendations": report_json.get("opportunities") if isinstance(report_json.get("opportunities"), list) else [],
                 "report_json": report_json,
                 "report_md": report_md,
-                "competitors": competitors,  # minimized fields only
+                "competitors": competitors,
                 "sources": {"places": True, "openai": bool(OPENAI_API_KEY)},
-                "openai_tokens_used": int(tokens_used),
-                "places_calls": int(places_calls),
-                "cost_cents_estimate": int(est_cents),
+                "usage": {
+                    "openai_tokens": int(tokens_used),
+                    "places_calls": int(places_calls),
+                    "cost_cents_estimate": int(est_cents),
+                },
             },
         }
 
         _post("/api/worker/complete", payload, timeout=40)
+
     except Exception as e:
         try:
-            _post("/api/worker/complete", {"job_id": job_id, "status": "failed", "error": str(e)[:200]}, timeout=25)
+            _post(
+                "/api/worker/complete",
+                {"job_id": job_id, "analysis_id": analysis_id, "lock_owner": LOCK_OWNER, "ok": False, "error": str(e)[:200]},
+                timeout=25,
+            )
         except Exception:
             pass
     finally:
@@ -853,22 +855,34 @@ def _process_job(job: Dict[str, Any]) -> None:
 def main() -> None:
     if not WORKER_SECRET:
         raise SystemExit("Missing WORKER_SECRET")
+
     print(f"[worker] V17 starting — base={API_BASE} owner={LOCK_OWNER}")
+
     while True:
         try:
-            r = _post("/api/worker/claim", {"owner": LOCK_OWNER}, timeout=25)
+            r = _post("/api/worker/claim", {"lock_owner": LOCK_OWNER, "lease_seconds": 180}, timeout=25)
             if r.status_code != 200:
+                try:
+                    print("[worker] claim failed:", r.status_code, r.text[:300])
+                except Exception:
+                    print("[worker] claim failed:", r.status_code)
                 time.sleep(CLAIM_SLEEP_SECONDS)
                 continue
+
             data = r.json() or {}
             job = data.get("job")
-            if not job:
+
+            # IMPORTANT: Treat empty job record as "no job"
+            if not isinstance(job, dict) or not job.get("id"):
                 time.sleep(CLAIM_SLEEP_SECONDS)
                 continue
+
             _process_job(job)
+
         except KeyboardInterrupt:
             raise
-        except Exception:
+        except Exception as e:
+            print("[worker] loop error:", repr(e))
             time.sleep(CLAIM_SLEEP_SECONDS)
 
 

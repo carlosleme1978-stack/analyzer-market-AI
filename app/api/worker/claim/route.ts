@@ -21,13 +21,14 @@ export async function POST(req: NextRequest) {
 
   if (error) return NextResponse.json({ error: 'claim_failed' }, { status: 500 })
 
-  if (!data) return NextResponse.json({ job: null })
+// Se a função não encontrou job, ela pode voltar um record com id null.
+// Trate isso como "sem job".
+if (!data || !data.id) return NextResponse.json({ job: null })
 
-  await supabase.from('analysis_events').insert({
-    analysis_id: data.analysis_id,
-    event: 'job_claimed',
-    meta: { job_id: data.id, lock_owner: lockOwner, lease_seconds: leaseSeconds }
-  })
+await supabase.from('analysis_events').insert({
+  analysis_id: data.analysis_id,
+  event: 'job_claimed',
+  meta: { job_id: data.id, lock_owner: lockOwner, lease_seconds: leaseSeconds }
+})
 
-  return NextResponse.json({ job: data })
-}
+return NextResponse.json({ job: data })}
