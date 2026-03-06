@@ -329,7 +329,7 @@ export default async function Page({ params }: { params: { token: string } }) {
         </Box>
       </section>
 
-      <section className="grid2">
+      {/* <section className="grid2">
         <Box title="Próximos passos">
           <List items={report?.next_steps} />
         </Box>
@@ -337,7 +337,7 @@ export default async function Page({ params }: { params: { token: string } }) {
           <div className="muted">Campos determinísticos para auditoria e debugging.</div>
           <pre className="mono" style={{ whiteSpace: 'pre-wrap', margin: 0, marginTop: 8 }}>{JSON.stringify({ opportunityMap, competitiveGap, acquisition, investment }, null, 2)}</pre>
         </Box>
-      </section>
+      </section> */}
 
       <Box title="Metadados">
         <pre className="mono" style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{JSON.stringify(d.meta, null, 2)}</pre>
