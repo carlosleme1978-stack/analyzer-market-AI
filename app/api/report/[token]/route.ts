@@ -49,8 +49,15 @@ export async function GET(req: NextRequest, { params }: { params: { token: strin
   // Atomic: consume 1 view in DB (prevents race between tabs/requests)
   const { data: consumed, error: consErr } = await supabase.rpc('consume_analysis_view', { p_id: data.id })
   const viewsUsed = Array.isArray(consumed) && consumed.length ? consumed[0]?.views : null
-  if (consErr || viewsUsed == null) return NextResponse.json({ error: 'views_exceeded' }, { status: 403 })
-
+  if (consErr) {
+  return NextResponse.json(
+    { error: 'consume_view_failed', details: consErr.message },
+    { status: 500 }
+  )
+  }
+  if (viewsUsed == null) {
+  return NextResponse.json({ error: 'views_exceeded' }, { status: 403 })
+  }
   await supabase.from('analysis_events').insert({ analysis_id: data.id, event: 'report_viewed', meta: { fp, views: viewsUsed } })
 
   // Create a short-lived viewer session cookie to support "detail" access without reusing token everywhere
