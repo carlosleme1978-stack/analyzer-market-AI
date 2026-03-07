@@ -17,8 +17,17 @@ function Box({ title, children }: { title: string; children: React.ReactNode }) 
 }
 
 function List({ items }: { items: any }) {
-  const arr = Array.isArray(items) ? items : []
-  if (!arr.length) return <div className="muted">—</div>
+  let arr = Array.isArray(items) ? items : []
+
+  if (!arr.length) {
+    arr = [
+      "Sugestões iniciais baseadas no tipo de negócio.",
+      "Google Ads para captar procura ativa.",
+      "Instagram Ads para awareness local.",
+      "Google Maps otimizado com reviews.",
+      "Remarketing para visitantes."
+    ]
+  }
   return (
     <ul style={{ margin: 0, paddingLeft: 18 }}>
       {arr.map((it, idx) => (
@@ -187,9 +196,9 @@ export default async function Page({ params }: { params: { token: string } }) {
       </section>
 
       
-<section className="grid2">
-  <Box title="Regiões ideais para anunciar">
-    {Array.isArray(paidRegions) && paidRegions.length ? (
+     <section className="grid2">
+     <Box title="Regiões ideais para anunciar">
+     {Array.isArray(paidRegions) && paidRegions.length ? (
       <SimpleTable
         headers={["region", "reason", "budget_share_pct"]}
         rows={paidRegions.map((r: any) => ({
@@ -198,9 +207,10 @@ export default async function Page({ params }: { params: { token: string } }) {
           budget_share_pct: (r?.budget_share_pct ?? '—') + (r?.budget_share_pct ? '%' : '')
         }))}
       />
-    ) : (
-      <div className="muted">—</div>
-    )}
+       ) : (
+      <div className="notice">
+       Sugestão inicial: comece pela região com mais procura no "Mapa de oportunidade".
+       </div>    )}
     <div className="muted" style={{ marginTop: 10 }}>
       Se não houver regiões detalhadas, use o “Mapa de oportunidade” como guia inicial.
     </div>
@@ -210,26 +220,44 @@ export default async function Page({ params }: { params: { token: string } }) {
     <div className="grid" style={{ gap: 12 }}>
       <div>
         <div className="muted2" style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Google Ads — palavras‑chave</div>
-        {googleKeywords.length ? (
-          <ul style={{ margin: 0, paddingLeft: 18 }}>
-            {googleKeywords.slice(0, 18).map((k: string, i: number) => <li key={i}>{k}</li>)}
-          </ul>
-        ) : (
-          <div className="muted">—</div>
-        )}
+        {(() => {
+          const keywordList = (googleKeywords.length ? googleKeywords : [
+            "serviço local",
+            "serviço perto de mim",
+            "melhor serviço local",
+            "serviço profissional",
+            "empresa local"
+          ]).slice(0, 18)
+          return keywordList.length ? (
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {keywordList.map((k: string, i: number) => <li key={i}>{k}</li>)}
+            </ul>
+          ) : (
+            <div className="muted">—</div>
+          )
+        })()}
       </div>
 
       <div>
         <div className="muted2" style={{ fontSize: 12, fontWeight: 900, marginBottom: 6 }}>Instagram — hashtags</div>
-        {instaHashtags.length ? (
-          <div className="notice" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {instaHashtags.slice(0, 24).map((h: string, i: number) => (
-              <span key={i} className="pill mono" style={{ fontSize: 12, padding: '6px 10px' }}>{h}</span>
-            ))}
-          </div>
-        ) : (
-          <div className="muted">—</div>
-        )}
+        {(() => {
+          const hashtagList = (instaHashtags.length ? instaHashtags : [
+            "#negociolocal",
+            "#clienteslocais",
+            "#marketinglocal",
+            "#servicoprofissional",
+            "#empreendedorismo"
+          ]).slice(0, 24)
+          return hashtagList.length ? (
+            <div className="notice" style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {hashtagList.map((h: string, i: number) => (
+                <span key={i} className="pill mono" style={{ fontSize: 12, padding: '6px 10px' }}>{h}</span>
+              ))}
+            </div>
+          ) : (
+            <div className="muted">—</div>
+          )
+        })()}
       </div>
     </div>
   </Box>
@@ -256,9 +284,11 @@ export default async function Page({ params }: { params: { token: string } }) {
           </div>
         ))}
       </div>
-    ) : (
-      <div className="muted">—</div>
-    )}
+        ) : (
+       <div className="notice">
+       Campanha sugerida: captação local + intenção alta de procura.
+       </div>
+       )}
     <div className="muted" style={{ marginTop: 10 }}>
       Estrutura sugerida para acelerar o setup inicial. Ajuste com base no seu site/landing.
     </div>
